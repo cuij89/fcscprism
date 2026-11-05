@@ -24,13 +24,18 @@ SAMPLES <- sprintf("export_T%s_Lymphocytes.fcs",
 ws <- open_flowjo_xml(file.path(data_dir, "exported 13-Oct-2026.wsp"))
 gs <- flowjo_to_gatingset(ws, name = "TIL", path = data_dir, subset = SAMPLES)
 
+# Two gates per sample, the way a user exporting several populations would:
+# the double-positive cells and their parent CD8 gate.
+GATES <- c(Q2 = Q2, CD8 = "/live t cells/CD8s")
 for (sn in sampleNames(gs)) {
   label <- sub("^export_(.*?)_Lymphocytes\\.fcs.*$", "\\1", sn)
-  ff <- gh_pop_get_data(gs[[sn]], Q2, inverse.transform = TRUE)
-  ff <- cytoframe_to_flowFrame(ff)
-  f <- file.path(out_dir, sprintf("export_%s_Q2.fcs", label))
-  write.FCS(ff, f)
-  cat(sprintf("  %-5s %4d events -> %s\n", label, nrow(ff), basename(f)))
+  for (g in names(GATES)) {
+    ff <- gh_pop_get_data(gs[[sn]], GATES[[g]], inverse.transform = TRUE)
+    ff <- cytoframe_to_flowFrame(ff)
+    f <- file.path(out_dir, sprintf("export_%s_%s.fcs", label, g))
+    write.FCS(ff, f)
+    cat(sprintf("  %-5s %-4s %6d events -> %s\n", label, g, nrow(ff), basename(f)))
+  }
 }
 
 # The marker names were read off the single-stain controls, not stored in the

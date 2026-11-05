@@ -39,13 +39,18 @@ disk does not work.
 ## What the user does
 
 1. In FlowJo, export the gate to analyse, one FCS per sample, with the same
-   export settings for every sample.
+   export settings for every sample. Several gates can be exported and
+   loaded together (for example Q2 and CD8 for every sample).
 2. Open the tool and select the FCS files. Optionally also select
-   `samples.csv` (`file, sample, group`) and `panel.csv`
-   (`channel, marker, use`).
-3. Check the event counts against FlowJo. Untick the channels used for gating,
+   `samples.csv` (`file, sample, population, group`) and `panel.csv`
+   (`channel, marker, use`). Sample and population are read from FlowJo's
+   `export_<sample>_<gate>.fcs` names and can be edited. The group (for
+   example control or treated) is set once per sample, and proportions are
+   averaged per group.
+3. Choose which population to analyse.
+4. Check the event counts against FlowJo. Untick the channels used for gating,
    then run.
-4. Choose k, name the clusters, mark artefacts to exclude, and download the
+5. Choose k, name the clusters, mark artefacts to exclude, and download the
    tables.
 
 ## Validation on the CD8 DP data (1,888 cells)

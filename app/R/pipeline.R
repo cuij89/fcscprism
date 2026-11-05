@@ -36,6 +36,16 @@ channel_table <- function(fcs_list) {
              stringsAsFactors = FALSE)
 }
 
+# FlowJo names exports "export_<sample>_<population>.fcs". Split that into
+# sample and population; anything else is one sample of population "all".
+parse_export_name <- function(file) {
+  stem <- sub("^export_", "", sub("[.]fcs$", "", file, ignore.case = TRUE))
+  has <- grepl("_", stem)
+  data.frame(sample = ifelse(has, sub("_[^_]*$", "", stem), stem),
+             population = ifelse(has, sub("^.*_", "", stem), "all"),
+             stringsAsFactors = FALSE)
+}
+
 # Merge an uploaded panel table (channel, marker[, use]) into the channel table.
 apply_panel <- function(ch, panel) {
   if (is.null(panel)) return(ch)

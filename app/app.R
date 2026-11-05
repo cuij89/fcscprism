@@ -39,18 +39,26 @@ ui <- page_navbar(
       card(
         card_header("Upload"),
         p(class = "text-muted small",
-          "One FCS file per sample, exported from FlowJo at the gate you want to analyse",
+          "One FCS file per sample and gate, exported from FlowJo",
           "(right-click the gate → Export / Concatenate Populations → FCS, all compensated parameters).",
+          "You can load several gates at once (e.g. Q2 and CD8 for every sample) and choose which to analyse.",
           "Files are read in your browser and are not uploaded anywhere."),
         fileInput("fcs", "FCS files", multiple = TRUE, accept = ".fcs"),
-        fileInput("samples_csv", "Sample table (optional CSV: file, sample, group)", accept = ".csv"),
+        fileInput("samples_csv", "Sample table (optional CSV: file, sample, population, group)", accept = ".csv"),
         fileInput("panel_csv", "Panel table (optional CSV: channel, marker, use)", accept = ".csv"),
-        uiOutput("load_msg")
+        uiOutput("load_msg"),
+        uiOutput("pop_select")
       ),
       card(
-        card_header("Samples"),
-        p(class = "text-muted small", "Check the event counts against FlowJo. Edit names and groups here."),
-        uiOutput("sample_editor")
+        card_header("Files"),
+        p(class = "text-muted small",
+          "Sample and population are read from FlowJo's export_<sample>_<gate>.fcs names - edit them if the guess is wrong.",
+          "Check the event counts against FlowJo."),
+        uiOutput("sample_editor"),
+        card_header("Groups"),
+        p(class = "text-muted small",
+          "Experimental group of each sample (e.g. control / treated). Proportions are averaged per group."),
+        uiOutput("group_editor")
       )
     )
   ),
@@ -158,21 +166,35 @@ server <- function(input, output, session) {
     rv$ch <- apply_panel(rv$ch, read_table_upload(input$panel_csv))
   })
 
+  # one row per file: sample and population guessed from the FlowJo export
+  # name, overridden by the sample table, then by edits in the Files card
   sample_meta <- reactive({
     req(rv$fcs)
     files <- vapply(rv$fcs, `[[`, "", "file")
+    guess <- parse_export_name(files)
+    sample <- guess$sample; population <- guess$population
+    group <- rep(NA_character_, length(files))
     st <- read_table_upload(input$samples_csv)
-    sample <- names(rv$fcs); group <- rep("all", length(files))
     if (!is.null(st)) {
       names(st) <- tolower(names(st))
-      i <- match(files, st$file)
+      i <- if ("file" %in% names(st)) match(files, st$file) else rep(NA_integer_, length(files))
       hit <- !is.na(i)
       if ("sample" %in% names(st)) sample[hit] <- st$sample[i[hit]]
+      if ("population" %in% names(st)) population[hit] <- st$population[i[hit]]
       if ("group" %in% names(st)) group[hit] <- st$group[i[hit]]
     }
-    data.frame(file = files, sample = sample, group = group,
+    data.frame(file = files, sample = sample, population = population, group = group,
                events = vapply(rv$fcs, function(x) nrow(x$exprs), 1L),
                stringsAsFactors = FALSE)
+  })
+
+  files_now <- reactive({
+    m <- sample_meta()
+    for (i in seq_len(nrow(m))) {
+      v <- input[[safe_id("sname", i)]]; if (!is.null(v) && nzchar(v)) m$sample[i] <- v
+      p <- input[[safe_id("spop", i)]]; if (!is.null(p) && nzchar(p)) m$population[i] <- p
+    }
+    m
   })
 
   output$sample_editor <- renderUI({
@@ -180,20 +202,74 @@ server <- function(input, output, session) {
     rows <- lapply(seq_len(nrow(m)), function(i) tags$tr(
       tags$td(class = "small", m$file[i]),
       tags$td(class = "text-end small", format(m$events[i], big.mark = ",")),
-      tags$td(textInput(safe_id("sname", i), NULL, m$sample[i], width = "120px")),
-      tags$td(textInput(safe_id("sgroup", i), NULL, m$group[i], width = "120px"))))
+      tags$td(textInput(safe_id("sname", i), NULL, m$sample[i], width = "110px")),
+      tags$td(textInput(safe_id("spop", i), NULL, m$population[i], width = "130px"))))
     tags$table(class = "table table-sm align-middle",
       tags$thead(tags$tr(tags$th("File"), tags$th(class = "text-end", "Events"),
-                         tags$th("Sample"), tags$th("Group"))),
+                         tags$th("Sample"), tags$th("Population"))),
       tags$tbody(rows))
   })
 
-  samples_now <- reactive({
-    m <- sample_meta()
-    for (i in seq_len(nrow(m))) {
-      v <- input[[safe_id("sname", i)]]; if (!is.null(v) && nzchar(v)) m$sample[i] <- v
-      g <- input[[safe_id("sgroup", i)]]; if (!is.null(g) && nzchar(g)) m$group[i] <- g
+  # group is a property of the sample, so it is edited once per sample even
+  # when the sample has several populations loaded
+  group_defaults <- reactive({
+    m <- files_now()
+    s <- unique(m$sample)
+    g <- vapply(s, function(x) {
+      v <- m$group[m$sample == x]; v <- v[!is.na(v) & nzchar(v)]
+      if (length(v)) v[1] else "all"
+    }, "")
+    data.frame(sample = s, group = unname(g), stringsAsFactors = FALSE)
+  })
+
+  output$group_editor <- renderUI({
+    gd <- group_defaults()
+    rows <- lapply(seq_len(nrow(gd)), function(j) tags$tr(
+      tags$td(class = "small", gd$sample[j]),
+      tags$td(textInput(safe_id("sgroup", j), NULL,
+                        isolate(input[[safe_id("sgroup", j)]]) %||% gd$group[j], width = "140px"))))
+    tags$table(class = "table table-sm align-middle",
+      tags$thead(tags$tr(tags$th("Sample"), tags$th("Group"))), tags$tbody(rows))
+  })
+
+  groups_now <- reactive({
+    gd <- group_defaults()
+    for (j in seq_len(nrow(gd))) {
+      g <- input[[safe_id("sgroup", j)]]; if (!is.null(g) && nzchar(g)) gd$group[j] <- g
     }
+    setNames(gd$group, gd$sample)
+  })
+
+  # The population list only changes when files or population names change.
+  # Keeping it in a reactiveVal (which ignores identical updates) stops the
+  # radio buttons re-rendering - and losing the user's choice - whenever a
+  # sample name is edited.
+  pop_list <- reactiveVal(NULL)
+  observe({
+    p <- files_now()$population
+    v <- list(pops = unique(p), n = as.integer(table(factor(p, levels = unique(p)))))
+    if (!identical(v, isolate(pop_list()))) pop_list(v)
+  })
+  populations <- reactive(pop_list()$pops)
+
+  output$pop_select <- renderUI({
+    v <- pop_list(); req(v)
+    cur <- isolate(input$population)
+    radioButtons("population", "Population to analyse",
+                 choiceNames = sprintf("%s  (%d files)", v$pops, v$n),
+                 choiceValues = v$pops,
+                 selected = if (isTRUE(cur %in% v$pops)) cur else v$pops[1])
+  })
+
+  # the files of the chosen population, with their sample names and groups
+  samples_now <- reactive({
+    m <- files_now()
+    pop <- input$population
+    if (is.null(pop) || !pop %in% m$population) pop <- m$population[1]
+    m$idx <- seq_len(nrow(m))
+    m <- m[m$population == pop, , drop = FALSE]
+    m$group <- unname(groups_now()[m$sample])
+    m$pop <- pop
     m
   })
 
@@ -229,7 +305,7 @@ server <- function(input, output, session) {
   # Measured in Chrome via webR: UMAP ~20 s per 10,000 cells (7 s for 1,888,
   # 68 s for 40,000, 298 s for 160,000); everything else is small.
   run_size <- reactive({
-    ev <- sample_meta()$events
+    ev <- samples_now()$events
     mp <- input$max_per
     if (is.null(mp) || is.na(mp)) mp <- Inf
     n <- sum(pmin(ev, mp))
@@ -241,8 +317,8 @@ server <- function(input, output, session) {
     req(rv$fcs)
     e <- run_size()
     div(class = paste("small mt-2", if (e$sec > 180) "text-danger" else "text-muted"),
-        sprintf("%s cells will be analysed - about %s in the browser.",
-                format(e$n, big.mark = ","), e$label),
+        sprintf("Population '%s': %s cells will be analysed - about %s in the browser.",
+                samples_now()$pop[1], format(e$n, big.mark = ","), e$label),
         if (e$sec > 180) " Lower 'Max cells per sample' to explore parameters first.")
   })
 
@@ -251,7 +327,12 @@ server <- function(input, output, session) {
     ch <- channels_now()
     if (sum(ch$use) < 2) { rv$log <- "Select at least two channels."; return() }
     m <- samples_now()
-    fcs <- rv$fcs; names(fcs) <- make.unique(m$sample)
+    if (anyDuplicated(m$sample)) {
+      rv$log <- sprintf("Population '%s' has more than one file for sample(s) %s. Fix the sample or population names in 1 · Data.",
+                        m$pop[1], paste(unique(m$sample[duplicated(m$sample)]), collapse = ", "))
+      return()
+    }
+    fcs <- rv$fcs[m$idx]; names(fcs) <- m$sample
     t0 <- proc.time()[["elapsed"]]
     est <- run_size()
     withProgress(message = "Running", value = 0, {
@@ -267,14 +348,16 @@ server <- function(input, output, session) {
     })
     if (inherits(res, "error")) { rv$log <- paste("Error:", conditionMessage(res)); return() }
     res$groups <- setNames(m$group, names(fcs))
+    res$params$population <- m$pop[1]
     rv$res <- res
     kmax <- length(res$consensus) + 1
     updateSliderInput(session, "k", max = kmax, value = min(isolate(input$k), kmax))
     updateSelectInput(session, "colour_by", choices = c("cluster", "sample", res$params$markers))
-    rv$log <- sprintf(paste0("Done in %.1f s  (UMAP %.1f s, clustering %.1f s)\n",
+    rv$log <- sprintf(paste0("Population '%s'\n",
+                             "Done in %.1f s  (UMAP %.1f s, clustering %.1f s)\n",
                              "%s cells from %d samples, %d markers\n",
                              "SOM %dx%d trained on %s cells%s\n\nGo to 4 · Results."),
-      proc.time()[["elapsed"]] - t0, res$timing[["umap"]], res$timing[["cluster"]],
+      m$pop[1], proc.time()[["elapsed"]] - t0, res$timing[["umap"]], res$timing[["cluster"]],
       format(length(res$sample), big.mark = ","), length(unique(res$sample)),
       ncol(res$expr), res$params$xdim, res$params$ydim,
       format(res$som$n_train, big.mark = ","),
