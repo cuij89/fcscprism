@@ -1,0 +1,12 @@
+# Derived from unpublished data - never commit
+testdata/
+test_shots/
+
+# Build output (scripts/build_site.R)
+site/
+
+# R
+.Rhistory
+.RData
+.Rproj.user/
+Rplots.pdf
